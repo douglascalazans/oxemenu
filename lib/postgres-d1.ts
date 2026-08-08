@@ -1,6 +1,7 @@
 import postgres, { type Sql } from "postgres";
 
 type BoundValue = string | number | boolean | null | Uint8Array;
+type QueryClient = Pick<Sql, "unsafe">;
 
 type D1LikeResult = {
   success: true;
@@ -52,9 +53,9 @@ function postgresPlaceholders(query: string) {
 class PostgresPreparedStatement {
   readonly query: string;
   readonly values: BoundValue[];
-  private readonly client: Sql;
+  private readonly client: QueryClient;
 
-  constructor(client: Sql, query: string, values: BoundValue[] = []) {
+  constructor(client: QueryClient, query: string, values: BoundValue[] = []) {
     this.client = client;
     this.query = query;
     this.values = values;
@@ -64,7 +65,7 @@ class PostgresPreparedStatement {
     return new PostgresPreparedStatement(this.client, this.query, values);
   }
 
-  private async execute(client: Sql = this.client) {
+  private async execute(client: QueryClient = this.client) {
     return client.unsafe<Record<string, unknown>[]>(
       postgresPlaceholders(this.query),
       this.values,
@@ -101,7 +102,7 @@ class PostgresPreparedStatement {
     };
   }
 
-  async executeWith(client: Sql): Promise<D1LikeResult> {
+  async executeWith(client: QueryClient): Promise<D1LikeResult> {
     const rows = await this.execute(client);
     return {
       success: true,
