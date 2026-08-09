@@ -37,6 +37,7 @@ next-env.d.ts
 *.tsbuildinfo
 /dist/
 /.wrangler/
+/.netlify/
 /.sites-runtime/
 /outputs/
 /work/
