@@ -3,7 +3,9 @@ import { DataError } from "@/lib/data-error";
 const BUCKET = "oxemenu-media";
 
 function storageConfiguration() {
-  const baseUrl = process.env.SUPABASE_URL?.replace(/\/$/, "");
+  const baseUrl = (
+    process.env.SUPABASE_URL ?? process.env.SUPABASE_DATABASE_URL
+  )?.replace(/\/$/, "");
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!baseUrl || !serviceKey) {
     throw new DataError("O armazenamento de fotos não está disponível.", 503);
