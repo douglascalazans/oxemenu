@@ -25,7 +25,9 @@ export function getRuntimeEnv(): AppRuntimeEnv {
   if (!runtime.DB && process.env.DATABASE_URL) {
     runtime.DB = getPostgresD1Database(process.env.DATABASE_URL);
   }
-  if (!runtime.BUCKET && process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  const supabaseUrl =
+    process.env.SUPABASE_URL ?? process.env.SUPABASE_DATABASE_URL;
+  if (!runtime.BUCKET && supabaseUrl && process.env.SUPABASE_SERVICE_ROLE_KEY) {
     runtime.BUCKET = createSupabaseBucketAdapter();
   }
   runtime.ADMIN_EMAILS ??= process.env.ADMIN_EMAILS;

@@ -8,7 +8,7 @@ Sistema de cardápios digitais com página pública, carrinho para pedidos pelo 
 - React 19 e TypeScript
 - PostgreSQL do Supabase
 - Supabase Storage privado para as imagens
-- Vercel para hospedagem
+- Netlify com OpenNext para hospedagem
 
 ## Configuração
 
@@ -40,3 +40,14 @@ npm run build
 ```
 
 As tabelas e o bucket privado `oxemenu-media` são preparados automaticamente na primeira utilização com as credenciais configuradas.
+
+## Publicação
+
+O projeto está configurado para publicação dinâmica no Netlify:
+
+- comando de build: `npm run build`
+- diretório de publicação: `.next`
+- runtime: Node.js 24
+- App Router, SSR, APIs e otimização de imagens preservados pelo adaptador OpenNext
+
+As variáveis sigilosas devem ser cadastradas no painel do Netlify, nunca no repositório.

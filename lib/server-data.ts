@@ -60,6 +60,42 @@ const userAuthColumns = [
   },
 ] as const;
 
+const postgresTables = [
+  "auth_invitations",
+  "auth_sessions",
+  "categories",
+  "establishments",
+  "media",
+  "option_groups",
+  "product_options",
+  "products",
+  "users",
+] as const;
+
+async function hasCurrentPostgresSchema(d1: D1Database) {
+  const tables = await d1
+    .prepare(
+      `SELECT table_name
+       FROM information_schema.tables
+       WHERE table_schema = 'public'`,
+    )
+    .all<{ table_name: string }>();
+  const existingTables = new Set(tables.results.map(({ table_name }) => table_name));
+  if (!postgresTables.every((table) => existingTables.has(table))) return false;
+
+  const columns = await d1
+    .prepare(
+      `SELECT column_name
+       FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'users'`,
+    )
+    .all<{ column_name: string }>();
+  const existingColumns = new Set(
+    columns.results.map(({ column_name }) => column_name),
+  );
+  return userAuthColumns.every(({ name }) => existingColumns.has(name));
+}
+
 async function ensureUserAuthColumns(d1: D1Database) {
   if (isPostgresD1Database(d1)) {
     for (const column of userAuthColumns) {
@@ -129,6 +165,12 @@ export async function ensureSchema() {
   schemaReady = (async () => {
     const d1 = getRuntimeEnv().DB;
     if (!d1) throw new DataError("O banco de dados não está disponível.", 503);
+
+    // Production uses a least-privilege Supabase role. The schema is managed
+    // separately, so avoid issuing owner-only DDL on every serverless cold start.
+    if (isPostgresD1Database(d1) && (await hasCurrentPostgresSchema(d1))) {
+      return;
+    }
 
     const statements = [
       `CREATE TABLE IF NOT EXISTS users (
