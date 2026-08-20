@@ -4,6 +4,7 @@ import {
   getStoreById,
   updateEstablishment,
 } from "@/lib/server-data";
+import { readJsonBody } from "@/lib/security";
 
 export async function GET(
   request: Request,
@@ -27,7 +28,7 @@ export async function PATCH(
   try {
     await requireRequestActor(request, ["admin"]);
     const { id } = await context.params;
-    const input = (await request.json()) as Record<string, unknown>;
+    const input = await readJsonBody<Record<string, unknown>>(request);
     return Response.json(await updateEstablishment(id, input));
   } catch (error) {
     return apiError(error);

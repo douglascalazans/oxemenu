@@ -2,8 +2,9 @@ import {
   createMerchantInvitation,
   getEstablishmentAccess,
   getRequestSession,
-  isSameOrigin,
 } from "@/lib/auth/server";
+import { apiError } from "@/lib/request-auth";
+import { isNonEmptyString, readJsonBody } from "@/lib/security";
 import { normalizeEmail } from "@/lib/server-data";
 
 export async function GET(request: Request) {
@@ -20,38 +21,47 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  if (!isSameOrigin(request)) {
-    return Response.json({ error: "Origem da solicitação inválida." }, { status: 403 });
-  }
-  const user = await getRequestSession(request);
-  if (!user || user.role !== "admin") {
-    return Response.json({ error: "Acesso não autorizado." }, { status: 401 });
-  }
-  let payload: { email?: string; establishmentId?: string };
   try {
-    payload = (await request.json()) as typeof payload;
-  } catch {
-    return Response.json({ error: "Dados inválidos." }, { status: 400 });
-  }
-  const establishmentId = payload.establishmentId?.trim() ?? "";
-  if (!establishmentId) {
-    return Response.json({ error: "Estabelecimento inválido." }, { status: 400 });
-  }
-  const email = payload.email?.trim() ? normalizeEmail(payload.email) : "";
-  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return Response.json({ error: "Informe um e-mail válido." }, { status: 400 });
-  }
-  try {
+    const payload = await readJsonBody<{
+      email?: string;
+      establishmentId?: string;
+    }>(request);
+    const user = await getRequestSession(request);
+    if (!user || user.role !== "admin") {
+      return Response.json(
+        { error: "Acesso não autorizado." },
+        { status: 401, headers: { "Cache-Control": "no-store" } },
+      );
+    }
+    const establishmentId = isNonEmptyString(payload.establishmentId, 128)
+      ? payload.establishmentId.trim()
+      : "";
+    if (!establishmentId) {
+      return Response.json(
+        { error: "Estabelecimento inválido." },
+        { status: 400, headers: { "Cache-Control": "no-store" } },
+      );
+    }
+    const email = isNonEmptyString(payload.email, 254)
+      ? normalizeEmail(payload.email)
+      : "";
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return Response.json(
+        { error: "Informe um e-mail válido." },
+        { status: 400, headers: { "Cache-Control": "no-store" } },
+      );
+    }
     const invitation = await createMerchantInvitation({
       admin: user,
       establishmentId,
       email,
       request,
     });
-    return Response.json(invitation, { status: 201 });
+    return Response.json(invitation, {
+      status: 201,
+      headers: { "Cache-Control": "no-store" },
+    });
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Não foi possível gerar o convite.";
-    return Response.json({ error: message }, { status: 400 });
+    return apiError(error);
   }
 }

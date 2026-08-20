@@ -1,26 +1,63 @@
-import { DataError } from "@/lib/data-error";
+import { DataError } from "./data-error.ts";
 
 const BUCKET = "oxemenu-media";
 
-function storageConfiguration() {
+type StorageConfiguration =
+  | { kind: "direct"; baseUrl: string; serviceKey: string }
+  | { kind: "proxy"; proxyUrl: string; proxyKey: string };
+
+function storageConfiguration(): StorageConfiguration {
   const baseUrl = (
     process.env.SUPABASE_URL ?? process.env.SUPABASE_DATABASE_URL
   )?.replace(/\/$/, "");
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!baseUrl || !serviceKey) {
+  const serviceKey =
+    process.env.SUPABASE_SECRET_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (baseUrl && serviceKey) {
+    return { kind: "direct", baseUrl, serviceKey };
+  }
+
+  const proxyKey = process.env.OXEMENU_STORAGE_PROXY_KEY;
+  const proxyUrl = (
+    process.env.SUPABASE_STORAGE_PROXY_URL ??
+    (baseUrl ? `${baseUrl}/functions/v1/oxemenu-storage` : undefined)
+  )?.replace(/\/$/, "");
+  if (!proxyUrl || !proxyKey) {
     throw new DataError("O armazenamento de fotos não está disponível.", 503);
   }
-  return { baseUrl, serviceKey };
+  return { kind: "proxy", proxyUrl, proxyKey };
 }
 
 function headers(contentType?: string) {
-  const { serviceKey } = storageConfiguration();
-  const value = new Headers({
-    Authorization: `Bearer ${serviceKey}`,
-    apikey: serviceKey,
-  });
+  const configuration = storageConfiguration();
+  const value = new Headers();
+  if (configuration.kind === "direct") {
+    value.set("apikey", configuration.serviceKey);
+    if (!configuration.serviceKey.startsWith("sb_secret_")) {
+      value.set("Authorization", `Bearer ${configuration.serviceKey}`);
+    }
+  } else {
+    value.set("x-oxemenu-storage-key", configuration.proxyKey);
+  }
   if (contentType) value.set("Content-Type", contentType);
   return value;
+}
+
+export function encodeStorageKey(key: string) {
+  return key.split("/").map(encodeURIComponent).join("/");
+}
+
+function storageObjectUrl(configuration: StorageConfiguration, key: string) {
+  const encodedKey = encodeStorageKey(key);
+  return configuration.kind === "direct"
+    ? `${configuration.baseUrl}/storage/v1/object/${BUCKET}/${encodedKey}`
+    : `${configuration.proxyUrl}/object/${encodedKey}`;
+}
+
+function storageDownloadUrl(configuration: StorageConfiguration, key: string) {
+  const encodedKey = encodeStorageKey(key);
+  return configuration.kind === "direct"
+    ? `${configuration.baseUrl}/storage/v1/object/authenticated/${BUCKET}/${encodedKey}`
+    : `${configuration.proxyUrl}/object/${encodedKey}`;
 }
 
 let bucketReady: Promise<void> | null = null;
@@ -28,7 +65,9 @@ let bucketReady: Promise<void> | null = null;
 async function ensureBucket() {
   if (bucketReady) return bucketReady;
   bucketReady = (async () => {
-    const { baseUrl } = storageConfiguration();
+    const configuration = storageConfiguration();
+    if (configuration.kind === "proxy") return;
+    const { baseUrl } = configuration;
     const response = await fetch(`${baseUrl}/storage/v1/bucket/${BUCKET}`, {
       headers: headers(),
       cache: "no-store",
@@ -56,15 +95,15 @@ export function createSupabaseBucketAdapter(): R2Bucket {
   return {
     async put(key, value, options) {
       await ensureBucket();
-      const { baseUrl } = storageConfiguration();
+      const configuration = storageConfiguration();
       const body =
         value instanceof ReadableStream
           ? await new Response(value).arrayBuffer()
           : value;
       const response = await fetch(
-        `${baseUrl}/storage/v1/object/${BUCKET}/${encodeURI(key)}`,
+        storageObjectUrl(configuration, key),
         {
-          method: "POST",
+          method: configuration.kind === "direct" ? "POST" : "PUT",
           headers: (() => {
             const valueHeaders = headers(
               options?.httpMetadata && "contentType" in options.httpMetadata
@@ -94,9 +133,9 @@ export function createSupabaseBucketAdapter(): R2Bucket {
     },
     async get(key) {
       await ensureBucket();
-      const { baseUrl } = storageConfiguration();
+      const configuration = storageConfiguration();
       const response = await fetch(
-        `${baseUrl}/storage/v1/object/authenticated/${BUCKET}/${encodeURI(key)}`,
+        storageDownloadUrl(configuration, key),
         { headers: headers(), cache: "no-store" },
       );
       if (response.status === 404) return null;

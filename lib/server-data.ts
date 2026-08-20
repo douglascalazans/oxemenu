@@ -27,6 +27,8 @@ import {
 import { getRuntimeEnv } from "@/lib/runtime-env";
 import { isPostgresD1Database } from "@/lib/postgres-d1";
 import { DataError } from "@/lib/data-error";
+import { canAccessStore } from "@/lib/access-control";
+import { RequestSecurityError, sanitizeWebUrl } from "@/lib/security";
 
 export { DataError } from "@/lib/data-error";
 
@@ -41,6 +43,10 @@ const userAuthColumns = [
   {
     name: "password_salt",
     definition: "TEXT NOT NULL DEFAULT ''",
+  },
+  {
+    name: "password_iterations",
+    definition: "INTEGER NOT NULL DEFAULT 100000",
   },
   {
     name: "recovery_code_hash",
@@ -61,6 +67,7 @@ const userAuthColumns = [
 ] as const;
 
 const postgresTables = [
+  "auth_rate_limits",
   "auth_invitations",
   "auth_sessions",
   "categories",
@@ -152,11 +159,60 @@ function parseJson<T>(value: string, fallback: T): T {
 function cents(value: unknown) {
   const number = Number(value);
   if (!Number.isFinite(number)) return 0;
-  return Math.max(0, Math.round(number * 100));
+  return Math.min(100_000_000, Math.max(0, Math.round(number * 100)));
 }
 
 function clampText(value: unknown, max: number) {
   return String(value ?? "").trim().slice(0, max);
+}
+
+function safeUrl(value: unknown, maxLength: number, allowRelative = false) {
+  try {
+    return sanitizeWebUrl(value, { allowRelative, maxLength });
+  } catch (error) {
+    if (error instanceof RequestSecurityError) {
+      throw new DataError(error.message, error.status);
+    }
+    throw error;
+  }
+}
+
+function sanitizeHours(value: unknown): OpeningHour[] {
+  const supplied = Array.isArray(value) ? value : [];
+  return DEFAULT_HOURS.map((fallback) => {
+    const candidate = supplied.find(
+      (item) =>
+        typeof item === "object" &&
+        item !== null &&
+        Number((item as Record<string, unknown>).day) === fallback.day,
+    ) as Record<string, unknown> | undefined;
+    const opens = String(candidate?.opens ?? "");
+    const closes = String(candidate?.closes ?? "");
+    const validTime = /^([01]\d|2[0-3]):[0-5]\d$/;
+    return {
+      ...fallback,
+      enabled:
+        typeof candidate?.enabled === "boolean"
+          ? candidate.enabled
+          : fallback.enabled,
+      opens: validTime.test(opens) ? opens : fallback.opens,
+      closes: validTime.test(closes) ? closes : fallback.closes,
+    };
+  });
+}
+
+function sanitizeServiceModes(value: unknown): ServiceMode[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((item): item is ServiceMode =>
+    item === "entrega" || item === "retirada" || item === "local",
+  ))];
+}
+
+function sanitizePaymentMethods(value: unknown): PaymentMethod[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((item): item is PaymentMethod =>
+    item === "Pix" || item === "Dinheiro" || item === "Cartão",
+  ))];
 }
 
 export async function ensureSchema() {
@@ -188,6 +244,7 @@ export async function ensureSchema() {
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       )`,
       "CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users (email)",
+      "CREATE UNIQUE INDEX IF NOT EXISTS users_single_active_admin ON users (role) WHERE role = 'admin' AND status = 'active' AND password_hash <> ''",
       `CREATE TABLE IF NOT EXISTS auth_sessions (
         token_hash TEXT PRIMARY KEY NOT NULL,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -196,6 +253,15 @@ export async function ensureSchema() {
       )`,
       "CREATE INDEX IF NOT EXISTS auth_sessions_user_idx ON auth_sessions (user_id)",
       "CREATE INDEX IF NOT EXISTS auth_sessions_expires_idx ON auth_sessions (expires_at)",
+      `CREATE TABLE IF NOT EXISTS auth_rate_limits (
+        key_hash TEXT PRIMARY KEY NOT NULL,
+        action TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        window_started_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`,
+      "CREATE INDEX IF NOT EXISTS auth_rate_limits_expires_idx ON auth_rate_limits (expires_at)",
       `CREATE TABLE IF NOT EXISTS establishments (
         id TEXT PRIMARY KEY NOT NULL,
         slug TEXT NOT NULL,
@@ -494,10 +560,7 @@ export async function assertStoreAccess(actor: Actor, establishmentId: string) {
     where: eq(establishments.id, establishmentId),
   });
   if (!store) throw new DataError("Estabelecimento não encontrado.", 404);
-  if (
-    actor.role !== "admin" &&
-    normalizeEmail(store.ownerEmail ?? "") !== normalizeEmail(actor.email)
-  ) {
+  if (!canAccessStore(actor, store.ownerEmail)) {
     throw new DataError("Você não tem acesso a este estabelecimento.", 403);
   }
   return store;
@@ -737,10 +800,10 @@ export async function createEstablishment(input: EstablishmentInput) {
     description: clampText(input.description, 600),
     whatsapp: clampText(input.whatsapp, 30).replace(/\D/g, ""),
     address: clampText(input.address, 220),
-    instagram: clampText(input.instagram, 240),
-    mapsUrl: clampText(input.mapsUrl, 500),
-    logoUrl: clampText(input.logoUrl, 600),
-    coverUrl: clampText(input.coverUrl, 600),
+    instagram: safeUrl(input.instagram, 240),
+    mapsUrl: safeUrl(input.mapsUrl, 500),
+    logoUrl: safeUrl(input.logoUrl, 600, true),
+    coverUrl: safeUrl(input.coverUrl, 600, true),
     ownerEmail: ownerEmail || null,
     managementMode,
     status:
@@ -748,12 +811,16 @@ export async function createEstablishment(input: EstablishmentInput) {
         ? input.status
         : "active",
     forcedOpenState: "auto",
-    hoursJson: JSON.stringify(input.hours?.length ? input.hours : DEFAULT_HOURS),
+    hoursJson: JSON.stringify(sanitizeHours(input.hours)),
     serviceModesJson: JSON.stringify(
-      input.serviceModes?.length ? input.serviceModes : ["entrega", "retirada"],
+      sanitizeServiceModes(input.serviceModes).length
+        ? sanitizeServiceModes(input.serviceModes)
+        : ["entrega", "retirada"],
     ),
     paymentMethodsJson: JSON.stringify(
-      input.paymentMethods?.length ? input.paymentMethods : ["Pix", "Dinheiro"],
+      sanitizePaymentMethods(input.paymentMethods).length
+        ? sanitizePaymentMethods(input.paymentMethods)
+        : ["Pix", "Dinheiro"],
     ),
     deliveryFeeCents: cents(input.deliveryFee),
   });
@@ -844,19 +911,19 @@ export async function updateEstablishment(
       instagram:
         input.instagram === undefined
           ? existing.instagram
-          : clampText(input.instagram, 240),
+          : safeUrl(input.instagram, 240),
       mapsUrl:
         input.mapsUrl === undefined
           ? existing.mapsUrl
-          : clampText(input.mapsUrl, 500),
+          : safeUrl(input.mapsUrl, 500),
       logoUrl:
         input.logoUrl === undefined
           ? existing.logoUrl
-          : clampText(input.logoUrl, 600),
+          : safeUrl(input.logoUrl, 600, true),
       coverUrl:
         input.coverUrl === undefined
           ? existing.coverUrl
-          : clampText(input.coverUrl, 600),
+          : safeUrl(input.coverUrl, 600, true),
       ownerEmail: nextOwner,
       managementMode: nextMode,
       status:
@@ -874,15 +941,15 @@ export async function updateEstablishment(
       hoursJson:
         input.hours === undefined
           ? existing.hoursJson
-          : JSON.stringify(input.hours),
+          : JSON.stringify(sanitizeHours(input.hours)),
       serviceModesJson:
         input.serviceModes === undefined
           ? existing.serviceModesJson
-          : JSON.stringify(input.serviceModes),
+          : JSON.stringify(sanitizeServiceModes(input.serviceModes)),
       paymentMethodsJson:
         input.paymentMethods === undefined
           ? existing.paymentMethodsJson
-          : JSON.stringify(input.paymentMethods),
+          : JSON.stringify(sanitizePaymentMethods(input.paymentMethods)),
       deliveryFeeCents:
         input.deliveryFee === undefined
           ? existing.deliveryFeeCents
@@ -934,7 +1001,8 @@ type ProductInput = Partial<MenuProduct> & {
 async function saveOptionGroups(productId: string, groups: OptionGroup[]) {
   const db = getDb();
   await db.delete(optionGroups).where(eq(optionGroups.productId, productId));
-  for (const [groupIndex, group] of groups.entries()) {
+  const limitedGroups = Array.isArray(groups) ? groups.slice(0, 20) : [];
+  for (const [groupIndex, group] of limitedGroups.entries()) {
     const name = clampText(group.name, 80);
     if (!name) continue;
     const groupId = `group-${crypto.randomUUID()}`;
@@ -946,7 +1014,8 @@ async function saveOptionGroups(productId: string, groups: OptionGroup[]) {
       maxSelections: Math.max(1, Math.min(20, Number(group.max) || 1)),
       sortOrder: groupIndex,
     });
-    for (const [optionIndex, option] of group.options.entries()) {
+    const options = Array.isArray(group.options) ? group.options.slice(0, 50) : [];
+    for (const [optionIndex, option] of options.entries()) {
       const optionName = clampText(option.name, 80);
       if (!optionName) continue;
       await db.insert(productOptions).values({
@@ -989,7 +1058,7 @@ export async function createProduct(
     name,
     description: clampText(input.description, 600),
     priceCents: cents(input.price),
-    imageUrl: clampText(input.image, 600),
+    imageUrl: safeUrl(input.image, 600, true),
     featured: Boolean(input.featured),
     available: input.available !== false,
     badge: clampText(input.badge, 40),
@@ -1034,7 +1103,7 @@ export async function updateProduct(id: string, input: ProductInput) {
       imageUrl:
         input.image === undefined
           ? existing.imageUrl
-          : clampText(input.image, 600),
+          : safeUrl(input.image, 600, true),
       featured:
         input.featured === undefined ? existing.featured : Boolean(input.featured),
       available:

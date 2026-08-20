@@ -3,6 +3,7 @@ import {
   createEstablishment,
   listEstablishments,
 } from "@/lib/server-data";
+import { readJsonBody } from "@/lib/security";
 
 export async function GET(request: Request) {
   try {
@@ -16,7 +17,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     await requireRequestActor(request, ["admin"]);
-    const input = (await request.json()) as Record<string, unknown>;
+    const input = await readJsonBody<Record<string, unknown>>(request);
     const bundle = await createEstablishment(input);
     return Response.json(bundle, { status: 201 });
   } catch (error) {

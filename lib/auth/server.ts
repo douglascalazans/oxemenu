@@ -3,6 +3,7 @@ import {
   createRecoveryCode,
   hashOpaqueToken,
   hashPassword,
+  PASSWORD_ITERATIONS,
   randomToken,
   timingSafeEqual,
   verifyPassword,
@@ -18,11 +19,10 @@ import {
   ensureSeedData,
   normalizeEmail,
 } from "@/lib/server-data";
+import { isValidInvitationToken } from "@/lib/security";
 
 const SESSION_COOKIE = "caruarufood_session";
 const SESSION_SECONDS = 60 * 60 * 24 * 7;
-const LOGIN_LOCK_MINUTES = 15;
-const MAX_LOGIN_FAILURES = 5;
 
 type UserRow = {
   id: string;
@@ -30,6 +30,7 @@ type UserRow = {
   display_name: string;
   password_hash: string;
   password_salt: string;
+  password_iterations: number;
   recovery_code_hash: string;
   role: AppRole;
   status: "active" | "revoked";
@@ -70,9 +71,104 @@ function validateName(displayName: string): string | null {
   return null;
 }
 
-export function isSameOrigin(request: Request): boolean {
-  const origin = request.headers.get("origin");
-  return !origin || origin === new URL(request.url).origin;
+function validateEmail(email: string): string | null {
+  const normalized = normalizeEmail(email);
+  if (
+    normalized.length > 254 ||
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)
+  ) {
+    return "Informe um e-mail válido.";
+  }
+  return null;
+}
+
+function clientAddress(request: Request): string {
+  const netlifyAddress = request.headers.get("x-nf-client-connection-ip");
+  const forwardedAddress = request.headers.get("x-forwarded-for")?.split(",")[0];
+  return (netlifyAddress ?? forwardedAddress ?? "unknown").trim().slice(0, 64);
+}
+
+async function incrementRateLimit(input: {
+  action: string;
+  identity: string;
+  windowMinutes: number;
+}): Promise<number> {
+  const database = getD1();
+  const now = new Date();
+  const expiresAt = new Date(
+    now.getTime() + input.windowMinutes * 60 * 1000,
+  ).toISOString();
+  const keyHash = await hashOpaqueToken(
+    `${input.action}|${input.identity.slice(0, 320)}`,
+  );
+  const row = await database
+    .prepare(
+      `INSERT INTO auth_rate_limits (
+         key_hash, action, attempts, window_started_at, expires_at, updated_at
+       ) VALUES (?, ?, 1, ?, ?, ?)
+       ON CONFLICT (key_hash) DO UPDATE SET
+         attempts = CASE
+           WHEN auth_rate_limits.expires_at <= excluded.window_started_at THEN 1
+           ELSE auth_rate_limits.attempts + 1
+         END,
+         window_started_at = CASE
+           WHEN auth_rate_limits.expires_at <= excluded.window_started_at
+             THEN excluded.window_started_at
+           ELSE auth_rate_limits.window_started_at
+         END,
+         expires_at = CASE
+           WHEN auth_rate_limits.expires_at <= excluded.window_started_at
+             THEN excluded.expires_at
+           ELSE auth_rate_limits.expires_at
+         END,
+         updated_at = excluded.updated_at
+       RETURNING attempts`,
+    )
+    .bind(
+      keyHash,
+      input.action,
+      now.toISOString(),
+      expiresAt,
+      now.toISOString(),
+    )
+    .first<{ attempts: number }>();
+  return Number(row?.attempts ?? 1);
+}
+
+export async function enforceAuthRateLimit(input: {
+  request: Request;
+  action: string;
+  subject: string;
+  maximum: number;
+  windowMinutes?: number;
+}): Promise<void> {
+  await ensureSeedData();
+  const address = clientAddress(input.request);
+  const subject = input.subject.trim().toLowerCase().slice(0, 256);
+  const windowMinutes = input.windowMinutes ?? 15;
+  const [subjectAttempts, addressAttempts] = await Promise.all([
+    incrementRateLimit({
+      action: input.action,
+      identity: `subject:${address}:${subject}`,
+      windowMinutes,
+    }),
+    incrementRateLimit({
+      action: input.action,
+      identity: `address:${address}`,
+      windowMinutes,
+    }),
+  ]);
+  void getD1()
+    .prepare("DELETE FROM auth_rate_limits WHERE expires_at < ?")
+    .bind(new Date(Date.now() - 60_000).toISOString())
+    .run()
+    .catch(() => undefined);
+  if (subjectAttempts > input.maximum || addressAttempts > input.maximum * 5) {
+    throw new DataError(
+      "Muitas tentativas. Aguarde alguns minutos e tente novamente.",
+      429,
+    );
+  }
 }
 
 function readCookie(cookieHeader: string | null, name: string): string | null {
@@ -115,6 +211,7 @@ async function findUserByEmail(email: string): Promise<UserRow | null> {
     (await getD1()
       .prepare(
         `SELECT id, email, display_name, password_hash, password_salt,
+                password_iterations,
                 recovery_code_hash, role, status, failed_login_count,
                 locked_until
            FROM users
@@ -132,6 +229,7 @@ async function findUserById(id: string): Promise<UserRow | null> {
     (await getD1()
       .prepare(
         `SELECT id, email, display_name, password_hash, password_salt,
+                password_iterations,
                 recovery_code_hash, role, status, failed_login_count,
                 locked_until
            FROM users
@@ -175,6 +273,7 @@ export async function getSessionActorFromCookieHeader(
   const row = await getD1()
     .prepare(
       `SELECT u.id, u.email, u.display_name, u.password_hash, u.password_salt,
+              u.password_iterations,
               u.recovery_code_hash, u.role, u.status, u.failed_login_count,
               u.locked_until
          FROM auth_sessions s
@@ -226,6 +325,12 @@ export async function loginWithPassword(input: {
   | { ok: true; cookie: string; user: AppUser }
   | { ok: false; error: string; status: number }
 > {
+  await enforceAuthRateLimit({
+    request: input.request,
+    action: `login:${input.expectedRole}`,
+    subject: normalizeEmail(input.email),
+    maximum: 8,
+  });
   const row = await findUserByEmail(input.email);
   if (!row || !row.password_hash || !row.password_salt) {
     await hashPassword(
@@ -249,42 +354,39 @@ export async function loginWithPassword(input: {
     input.password,
     row.password_hash,
     row.password_salt,
+    row.password_iterations || 100_000,
   );
   if (!matches || row.status !== "active") {
-    const previousFailures =
-      lockExpires && lockExpires <= now ? 0 : row.failed_login_count;
-    const failures = previousFailures + 1;
-    const lockedUntil =
-      failures >= MAX_LOGIN_FAILURES
-        ? new Date(
-            Date.now() + LOGIN_LOCK_MINUTES * 60 * 1000,
-          ).toISOString()
-        : null;
-    await getD1()
-      .prepare(
-        "UPDATE users SET failed_login_count = ?, locked_until = ?, updated_at = ? WHERE id = ?",
-      )
-      .bind(failures, lockedUntil, now.toISOString(), row.id)
-      .run();
     return { ok: false, error: "E-mail ou senha inválidos.", status: 401 };
   }
 
   if (row.role !== input.expectedRole) {
     return {
       ok: false,
-      error:
-        row.role === "admin"
-          ? "Use a entrada do painel administrativo."
-          : "Use a entrada da área do comerciante.",
-      status: 403,
+      error: "E-mail ou senha inválidos.",
+      status: 401,
     };
   }
 
+  const upgradedPassword =
+    row.password_iterations < PASSWORD_ITERATIONS
+      ? await hashPassword(input.password)
+      : null;
   await getD1()
     .prepare(
-      "UPDATE users SET failed_login_count = 0, locked_until = NULL, updated_at = ? WHERE id = ?",
+      `UPDATE users
+          SET failed_login_count = 0, locked_until = NULL,
+              password_hash = ?, password_salt = ?, password_iterations = ?,
+              updated_at = ?
+        WHERE id = ?`,
     )
-    .bind(now.toISOString(), row.id)
+    .bind(
+      upgradedPassword?.hash ?? row.password_hash,
+      upgradedPassword?.salt ?? row.password_salt,
+      upgradedPassword ? PASSWORD_ITERATIONS : row.password_iterations,
+      now.toISOString(),
+      row.id,
+    )
     .run();
   const session = await createSession(row.id, input.request);
   return { ok: true, ...session };
@@ -305,6 +407,13 @@ export async function registerFirstAdmin(input: {
     }
   | { ok: false; error: string; status: number }
 > {
+  await enforceAuthRateLimit({
+    request: input.request,
+    action: "register-admin",
+    subject: normalizeEmail(input.email),
+    maximum: 5,
+    windowMinutes: 30,
+  });
   const configuredCode =
     getRuntimeEnv().ADMIN_SETUP_CODE ??
     process.env.ADMIN_SETUP_CODE ??
@@ -323,7 +432,9 @@ export async function registerFirstAdmin(input: {
     };
   }
   const validationError =
-    validateName(input.displayName) ?? validatePassword(input.password);
+    validateName(input.displayName) ??
+    validateEmail(input.email) ??
+    validatePassword(input.password);
   if (validationError) {
     return { ok: false, error: validationError, status: 400 };
   }
@@ -343,7 +454,8 @@ export async function registerFirstAdmin(input: {
       .prepare(
         `UPDATE users
             SET display_name = ?, role = 'admin', password_hash = ?,
-                password_salt = ?, recovery_code_hash = ?, status = 'active',
+                password_salt = ?, password_iterations = ?,
+                recovery_code_hash = ?, status = 'active',
                 failed_login_count = 0, locked_until = NULL, updated_at = ?
           WHERE id = ?`,
       )
@@ -351,6 +463,7 @@ export async function registerFirstAdmin(input: {
         input.displayName.trim(),
         passwordData.hash,
         passwordData.salt,
+        PASSWORD_ITERATIONS,
         recoveryCodeHash,
         new Date().toISOString(),
         userId,
@@ -361,8 +474,8 @@ export async function registerFirstAdmin(input: {
       .prepare(
         `INSERT INTO users (
            id, email, display_name, role, password_hash, password_salt,
-           recovery_code_hash, status
-         ) VALUES (?, ?, ?, 'admin', ?, ?, ?, 'active')`,
+           password_iterations, recovery_code_hash, status
+         ) VALUES (?, ?, ?, 'admin', ?, ?, ?, ?, 'active')`,
       )
       .bind(
         userId,
@@ -370,6 +483,7 @@ export async function registerFirstAdmin(input: {
         input.displayName.trim(),
         passwordData.hash,
         passwordData.salt,
+        PASSWORD_ITERATIONS,
         recoveryCodeHash,
       )
       .run();
@@ -386,31 +500,58 @@ export async function createMerchantInvitation(input: {
 }): Promise<{ inviteUrl: string; expiresAt: string }> {
   await ensureSeedData();
   const store = await getD1()
-    .prepare("SELECT id FROM establishments WHERE id = ? LIMIT 1")
+    .prepare(
+      `SELECT id, owner_email, management_mode
+         FROM establishments
+        WHERE id = ?
+        LIMIT 1`,
+    )
     .bind(input.establishmentId)
-    .first<{ id: string }>();
+    .first<{
+      id: string;
+      owner_email: string | null;
+      management_mode: string;
+    }>();
   if (!store) throw new DataError("Estabelecimento não encontrado.", 404);
+  if (store.management_mode !== "merchant" || !store.owner_email) {
+    throw new DataError(
+      "Defina o e-mail do comerciante antes de gerar o convite.",
+    );
+  }
 
   const token = randomToken(24);
   const tokenHash = await hashOpaqueToken(token);
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-  const email = input.email?.trim()
-    ? normalizeEmail(input.email)
-    : null;
-  await getD1()
-    .prepare(
-      `INSERT INTO auth_invitations (
-         token_hash, establishment_id, email, created_by, expires_at
-       ) VALUES (?, ?, ?, ?, ?)`,
-    )
-    .bind(
-      tokenHash,
-      input.establishmentId,
-      email,
-      input.admin.userId,
-      expiresAt,
-    )
-    .run();
+  const ownerEmail = normalizeEmail(store.owner_email);
+  const email = input.email?.trim() ? normalizeEmail(input.email) : ownerEmail;
+  if (email !== ownerEmail) {
+    throw new DataError(
+      "O convite deve usar o e-mail vinculado ao estabelecimento.",
+    );
+  }
+  const database = getD1();
+  const now = new Date().toISOString();
+  await database.batch([
+    database
+      .prepare(
+        `UPDATE auth_invitations SET used_at = ?
+          WHERE establishment_id = ? AND used_at IS NULL`,
+      )
+      .bind(now, input.establishmentId),
+    database
+      .prepare(
+        `INSERT INTO auth_invitations (
+           token_hash, establishment_id, email, created_by, expires_at
+         ) VALUES (?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        tokenHash,
+        input.establishmentId,
+        email,
+        input.admin.userId,
+        expiresAt,
+      ),
+  ]);
   const url = new URL("/painel/cadastro", input.request.url);
   url.searchParams.set("convite", token);
   return { inviteUrl: url.toString(), expiresAt };
@@ -420,6 +561,7 @@ export async function registerMerchant(input: {
   displayName: string;
   email: string;
   password: string;
+  invitationToken: string;
   request: Request;
 }): Promise<
   | {
@@ -431,28 +573,49 @@ export async function registerMerchant(input: {
   | { ok: false; error: string; status: number }
 > {
   await ensureSeedData();
+  await enforceAuthRateLimit({
+    request: input.request,
+    action: "register-merchant",
+    subject: normalizeEmail(input.email),
+    maximum: 6,
+    windowMinutes: 30,
+  });
   const validationError =
-    validateName(input.displayName) ?? validatePassword(input.password);
+    validateName(input.displayName) ??
+    validateEmail(input.email) ??
+    validatePassword(input.password);
   if (validationError) {
     return { ok: false, error: validationError, status: 400 };
   }
   const email = normalizeEmail(input.email);
   const database = getD1();
+  if (!isValidInvitationToken(input.invitationToken)) {
+    return {
+      ok: false,
+      error: "Convite inválido ou expirado. Solicite um novo convite à OxeMenu.",
+      status: 403,
+    };
+  }
+  const tokenHash = await hashOpaqueToken(input.invitationToken.trim());
   const authorizedStore = await database
     .prepare(
-      `SELECT id
-         FROM establishments
-        WHERE owner_email = ?
-          AND management_mode = 'merchant'
+      `SELECT e.id
+         FROM auth_invitations i
+         JOIN establishments e ON e.id = i.establishment_id
+        WHERE i.token_hash = ?
+          AND i.used_at IS NULL
+          AND i.expires_at > ?
+          AND i.email = ?
+          AND e.owner_email = ?
+          AND e.management_mode = 'merchant'
         LIMIT 1`,
     )
-    .bind(email)
+    .bind(tokenHash, new Date().toISOString(), email, email)
     .first<{ id: string }>();
   if (!authorizedStore) {
     return {
       ok: false,
-      error:
-        "Este e-mail ainda não foi liberado. Confirme com a OxeMenu o e-mail cadastrado no seu cardápio.",
+      error: "Convite inválido ou expirado. Solicite um novo convite à OxeMenu.",
       status: 403,
     };
   }
@@ -475,7 +638,8 @@ export async function registerMerchant(input: {
         .prepare(
           `UPDATE users
               SET display_name = ?, role = 'merchant', password_hash = ?,
-                  password_salt = ?, recovery_code_hash = ?, status = 'active',
+                  password_salt = ?, password_iterations = ?,
+                  recovery_code_hash = ?, status = 'active',
                   failed_login_count = 0, locked_until = NULL, updated_at = ?
             WHERE id = ?`,
         )
@@ -483,6 +647,7 @@ export async function registerMerchant(input: {
           input.displayName.trim(),
           passwordData.hash,
           passwordData.salt,
+          PASSWORD_ITERATIONS,
           recoveryCodeHash,
           now,
           userId,
@@ -491,8 +656,8 @@ export async function registerMerchant(input: {
         .prepare(
           `INSERT INTO users (
              id, email, display_name, role, password_hash, password_salt,
-             recovery_code_hash, status
-           ) VALUES (?, ?, ?, 'merchant', ?, ?, ?, 'active')`,
+             password_iterations, recovery_code_hash, status
+           ) VALUES (?, ?, ?, 'merchant', ?, ?, ?, ?, 'active')`,
         )
         .bind(
           userId,
@@ -500,18 +665,17 @@ export async function registerMerchant(input: {
           input.displayName.trim(),
           passwordData.hash,
           passwordData.salt,
+          PASSWORD_ITERATIONS,
           recoveryCodeHash,
         );
   await database.batch([
     userStatement,
     database
       .prepare(
-        `UPDATE auth_invitations
-            SET used_at = ?
-          WHERE email = ?
-            AND used_at IS NULL`,
+        `UPDATE auth_invitations SET used_at = ?
+          WHERE token_hash = ? AND used_at IS NULL`,
       )
-      .bind(now, email),
+      .bind(now, tokenHash),
   ]);
   const session = await createSession(userId, input.request);
   return { ok: true, ...session, recoveryCode };
@@ -531,10 +695,18 @@ export async function changePassword(input: {
   user: SessionActor;
   currentPassword: string;
   newPassword: string;
+  request: Request;
 }): Promise<
   | { ok: true }
   | { ok: false; error: string; status: number }
 > {
+  await enforceAuthRateLimit({
+    request: input.request,
+    action: "change-password",
+    subject: input.user.userId,
+    maximum: 8,
+    windowMinutes: 30,
+  });
   const passwordError = validatePassword(input.newPassword);
   if (passwordError) return { ok: false, error: passwordError, status: 400 };
   const row = await findUserById(input.user.userId);
@@ -544,6 +716,7 @@ export async function changePassword(input: {
       input.currentPassword,
       row.password_hash,
       row.password_salt,
+      row.password_iterations || 100_000,
     ))
   ) {
     return { ok: false, error: "A senha atual está incorreta.", status: 403 };
@@ -553,11 +726,15 @@ export async function changePassword(input: {
   await database.batch([
     database
       .prepare(
-        "UPDATE users SET password_hash = ?, password_salt = ?, updated_at = ? WHERE id = ?",
+        `UPDATE users
+            SET password_hash = ?, password_salt = ?, password_iterations = ?,
+                updated_at = ?
+          WHERE id = ?`,
       )
       .bind(
         passwordData.hash,
         passwordData.salt,
+        PASSWORD_ITERATIONS,
         new Date().toISOString(),
         input.user.userId,
       ),
@@ -573,12 +750,27 @@ export async function recoverPassword(input: {
   recoveryCode: string;
   newPassword: string;
   expectedRole: AppRole;
+  request: Request;
 }): Promise<
   | { ok: true; recoveryCode: string }
   | { ok: false; error: string; status: number }
 > {
+  await enforceAuthRateLimit({
+    request: input.request,
+    action: `recover-password:${input.expectedRole}`,
+    subject: normalizeEmail(input.email),
+    maximum: 6,
+    windowMinutes: 30,
+  });
   const passwordError = validatePassword(input.newPassword);
   if (passwordError) return { ok: false, error: passwordError, status: 400 };
+  if (validateEmail(input.email)) {
+    return {
+      ok: false,
+      error: "E-mail ou código de recuperação inválidos.",
+      status: 403,
+    };
+  }
   const row = await findUserByEmail(input.email);
   const suppliedHash = await hashOpaqueToken(
     input.recoveryCode.trim().toUpperCase(),
@@ -604,13 +796,15 @@ export async function recoverPassword(input: {
     database
       .prepare(
         `UPDATE users
-            SET password_hash = ?, password_salt = ?, recovery_code_hash = ?,
+            SET password_hash = ?, password_salt = ?, password_iterations = ?,
+                recovery_code_hash = ?,
                 failed_login_count = 0, locked_until = NULL, updated_at = ?
           WHERE id = ?`,
       )
       .bind(
         passwordData.hash,
         passwordData.salt,
+        PASSWORD_ITERATIONS,
         recoveryCodeHash,
         new Date().toISOString(),
         row.id,

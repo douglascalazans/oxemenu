@@ -18,6 +18,7 @@ export const users = sqliteTable(
       .default("merchant"),
     passwordHash: text("password_hash").notNull().default(""),
     passwordSalt: text("password_salt").notNull().default(""),
+    passwordIterations: integer("password_iterations").notNull().default(100000),
     recoveryCodeHash: text("recovery_code_hash").notNull().default(""),
     status: text("status", { enum: ["active", "revoked"] })
       .notNull()
@@ -112,6 +113,19 @@ export const authInvitations = sqliteTable(
     index("auth_invitations_store_idx").on(table.establishmentId),
     index("auth_invitations_expires_idx").on(table.expiresAt),
   ],
+);
+
+export const authRateLimits = sqliteTable(
+  "auth_rate_limits",
+  {
+    keyHash: text("key_hash").primaryKey(),
+    action: text("action").notNull(),
+    attempts: integer("attempts").notNull().default(0),
+    windowStartedAt: text("window_started_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("auth_rate_limits_expires_idx").on(table.expiresAt)],
 );
 
 export const categories = sqliteTable(

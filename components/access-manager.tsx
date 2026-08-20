@@ -28,6 +28,8 @@ export function AccessManager({
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [inviteUrl, setInviteUrl] = useState("");
+  const [generating, setGenerating] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -52,25 +54,66 @@ export function AccessManager({
     };
   }, [establishmentId]);
 
+  const generateInvitation = async () => {
+    setGenerating(true);
+    setError("");
+    try {
+      const response = await fetch("/api/admin/invitations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ establishmentId, email: ownerEmail }),
+      });
+      const data = (await response.json()) as {
+        inviteUrl?: string;
+        error?: string;
+      };
+      if (!response.ok || !data.inviteUrl) {
+        throw new Error(data.error || "Não foi possível gerar o convite.");
+      }
+      setInviteUrl(data.inviteUrl);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Não foi possível gerar o convite.",
+      );
+    } finally {
+      setGenerating(false);
+    }
+  };
+
   return (
     <div className="access-manager">
       <div className="merchant-invite-action">
         <div>
           <strong>Primeiro acesso do comerciante</strong>
           <small>
-            O e-mail <b>{ownerEmail}</b> está liberado. No painel do comerciante,
-            ele deve clicar em “Primeiro acesso” para criar a própria senha.
+            Gere um link individual para <b>{ownerEmail}</b>. O link expira em
+            sete dias e deixa de funcionar depois do cadastro.
           </small>
         </div>
-        <a
+        <button
           className="secondary-button"
-          href="/painel/login"
-          target="_blank"
-          rel="noreferrer"
+          type="button"
+          onClick={generateInvitation}
+          disabled={generating || !ownerEmail}
         >
-          Abrir tela de login
-        </a>
+          {generating ? "Gerando…" : "Gerar link seguro"}
+        </button>
       </div>
+
+      {inviteUrl && (
+        <div className="recovery-code-card">
+          <span>Link de primeiro acesso</span>
+          <strong>{inviteUrl}</strong>
+          <button
+            type="button"
+            onClick={() => navigator.clipboard?.writeText(inviteUrl)}
+          >
+            Copiar link
+          </button>
+        </div>
+      )}
 
       {error && <p className="form-error" role="alert">{error}</p>}
 

@@ -16,14 +16,15 @@ Crie um arquivo `.env.local` a partir de `.env.example` e informe:
 
 - `DATABASE_URL`: conexão PostgreSQL do pooler transacional do Supabase
 - `SUPABASE_URL`: URL do projeto Supabase
-- `SUPABASE_SERVICE_ROLE_KEY`: chave de serviço usada apenas no servidor
+- `OXEMENU_STORAGE_PROXY_KEY`: credencial restrita ao proxy privado do bucket `oxemenu-media` (recomendado na Netlify)
+- `SUPABASE_SECRET_KEY`: alternativa de acesso direto ao Storage, usada somente no servidor
 - `ADMIN_SETUP_CODE`: chave única para criar a primeira conta administrativa
 - `ADMIN_EMAILS`: e-mails administrativos separados por vírgula, quando necessário
 - `NEXT_PUBLIC_SITE_URL`: endereço público do site
 - `NEXT_PUBLIC_OXEMENU_WHATSAPP`: contato comercial da OxeMenu com DDI e DDD
 - `DEMO_WHATSAPP`: número que receberá pedidos feitos na demonstração Coffe Love
 
-Nunca publique `.env.local` nem a chave `SUPABASE_SERVICE_ROLE_KEY` no GitHub.
+Nunca publique `.env.local`, `OXEMENU_STORAGE_PROXY_KEY`, `SUPABASE_SECRET_KEY` ou `SUPABASE_SERVICE_ROLE_KEY` no GitHub.
 
 ## Desenvolvimento
 

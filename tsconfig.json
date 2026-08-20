@@ -3,6 +3,7 @@
     "target": "ES2017",
     "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
+    "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "strict": true,
     "noEmit": true,
@@ -38,6 +39,7 @@
     "drizzle.config.ts",
     "examples",
     "scripts",
+    "supabase/functions",
     "tests",
     "vite.config.ts",
     "worker"

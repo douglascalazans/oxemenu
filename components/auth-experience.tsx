@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState, type FormEvent } from "react";
 import type { AppRole } from "@/lib/auth/types";
 import { BrandLogo } from "@/components/brand-logo";
+import { isSafeReturnPath } from "@/lib/security";
 
 type AuthMode = "login" | "register-admin" | "register-merchant" | "recover";
 
@@ -12,6 +13,7 @@ type AuthExperienceProps = {
   role: AppRole;
   returnTo?: string;
   adminExists?: boolean;
+  invitationToken?: string;
 };
 
 const roleCopy = {
@@ -34,8 +36,7 @@ const roleCopy = {
 } as const;
 
 function validReturnTo(value: string | undefined, fallback: string): string {
-  if (!value?.startsWith("/") || value.startsWith("//")) return fallback;
-  return value;
+  return isSafeReturnPath(value) ? value! : fallback;
 }
 
 export function AuthExperience({
@@ -43,6 +44,7 @@ export function AuthExperience({
   role,
   returnTo,
   adminExists = false,
+  invitationToken,
 }: AuthExperienceProps) {
   const copy = roleCopy[role];
   const [displayName, setDisplayName] = useState("");
@@ -100,6 +102,7 @@ export function AuthExperience({
                 displayName,
                 email,
                 password,
+                invitationToken,
               }
             : {
                 email,
@@ -156,6 +159,22 @@ export function AuthExperience({
     );
   }
 
+  if (mode === "register-merchant" && !invitationToken) {
+    return (
+      <AuthFrame>
+        <div className="login-icon">{copy.icon}</div>
+        <p className="eyebrow">{copy.eyebrow}</p>
+        <h1>Convite necessário</h1>
+        <p className="login-lead">
+          Para criar o primeiro acesso, abra o link individual enviado pela OxeMenu. Se ele expirou, solicite um novo convite.
+        </p>
+        <a className="primary-button full centered-button" href={copy.loginPath}>
+          Voltar para o login
+        </a>
+      </AuthFrame>
+    );
+  }
+
   if (newRecoveryCode) {
     return (
       <AuthFrame>
@@ -163,7 +182,7 @@ export function AuthExperience({
         <p className="eyebrow">Conta protegida</p>
         <h1>{mode === "recover" ? "Senha alterada" : "Seu acesso foi criado"}</h1>
         <p className="login-lead">
-          Guarde este código em um local seguro. Ele permite recuperar sua senha sem depender do ChatGPT.
+          Guarde este código em um local seguro. Ele será necessário se você precisar recuperar sua senha.
         </p>
         <div className="recovery-code-card">
           <span>Código de recuperação</span>
@@ -309,9 +328,6 @@ function AuthFrame({ children }: { children: React.ReactNode }) {
         <BrandLogo />
       </Link>
       <section className="login-card">{children}</section>
-      <p className="login-foot">
-        Acesso próprio e protegido · sem depender de conta do ChatGPT
-      </p>
     </main>
   );
 }

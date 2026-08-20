@@ -5,6 +5,7 @@ import {
   getStoreById,
   updateEstablishment,
 } from "@/lib/server-data";
+import { readJsonBody } from "@/lib/security";
 
 export async function GET(
   request: Request,
@@ -30,7 +31,7 @@ export async function PATCH(
     const actor = await requireRequestActor(request);
     const { id } = await context.params;
     await assertStoreAccess(actor, id);
-    const input = (await request.json()) as Record<string, unknown>;
+    const input = await readJsonBody<Record<string, unknown>>(request);
     if (actor.role !== "admin") {
       delete input.ownerEmail;
       delete input.managementMode;

@@ -396,7 +396,7 @@ export function EstablishmentsList() {
                       : "Inativo"}
                 </span>
                 <div className="table-actions">
-                  <a href={`/${store.slug}`} target="_blank">↗</a>
+                  <a href={`/${store.slug}`} target="_blank" rel="noreferrer">↗</a>
                   <a href={`/admin/estabelecimentos/${store.id}`}>Editar</a>
                 </div>
               </div>
@@ -1063,7 +1063,7 @@ function ProductManager({
             <small>{bundle.products.length} itens cadastrados</small>
           </div>
           <div className="editor-header-actions">
-            <a href={`/${bundle.store.slug}`} target="_blank">Visualizar ↗</a>
+            <a href={`/${bundle.store.slug}`} target="_blank" rel="noreferrer">Visualizar ↗</a>
             <button
               className="primary-button add-product-trigger"
               type="button"
@@ -1523,7 +1523,7 @@ function StoreSettings({
 
       {error && <p className="form-error">{error}</p>}
       <div className="settings-save-bar">
-        <a className="secondary-button" href={`/${bundle.store.slug}`} target="_blank">
+        <a className="secondary-button" href={`/${bundle.store.slug}`} target="_blank" rel="noreferrer">
           Ver cardápio ↗
         </a>
         <button className="primary-button" type="submit" disabled={saving}>
@@ -1571,7 +1571,7 @@ function StoreWorkspace({
                 ? "Demonstração"
                 : "Inativo"}
           </span>
-          <a className="secondary-button" href={`/${bundle.store.slug}`} target="_blank">
+          <a className="secondary-button" href={`/${bundle.store.slug}`} target="_blank" rel="noreferrer">
             Abrir cardápio ↗
           </a>
         </div>

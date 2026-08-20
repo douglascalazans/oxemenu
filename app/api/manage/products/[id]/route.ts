@@ -6,6 +6,7 @@ import {
   getProductStoreId,
   updateProduct,
 } from "@/lib/server-data";
+import { assertTrustedMutation, readJsonBody } from "@/lib/security";
 
 async function authorize(request: Request, productId: string) {
   const actor = await requireRequestActor(request);
@@ -21,7 +22,7 @@ export async function PATCH(
   try {
     const { id } = await context.params;
     await authorize(request, id);
-    const input = (await request.json()) as Record<string, unknown>;
+    const input = await readJsonBody<Record<string, unknown>>(request);
     return Response.json(await updateProduct(id, input));
   } catch (error) {
     return apiError(error);
@@ -33,6 +34,7 @@ export async function DELETE(
   context: { params: Promise<{ id: string }> },
 ) {
   try {
+    assertTrustedMutation(request);
     const { id } = await context.params;
     await authorize(request, id);
     return Response.json(await deleteProduct(id));

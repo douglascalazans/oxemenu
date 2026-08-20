@@ -1,8 +1,6 @@
 const encoder = new TextEncoder();
-// The production Workers Web Crypto implementation accepts at most 100,000
-// PBKDF2 iterations. Keeping the value at that supported ceiling makes account
-// creation and password verification use the same portable parameters.
-const PASSWORD_ITERATIONS = 100_000;
+export const LEGACY_PASSWORD_ITERATIONS = 100_000;
+export const PASSWORD_ITERATIONS = 600_000;
 const PASSWORD_BYTES = 32;
 
 function toBase64Url(bytes: Uint8Array): string {
@@ -49,6 +47,7 @@ export async function hashOpaqueToken(value: string): Promise<string> {
 export async function hashPassword(
   password: string,
   salt = randomToken(16),
+  iterations = PASSWORD_ITERATIONS,
 ): Promise<{ hash: string; salt: string }> {
   const key = await crypto.subtle.importKey(
     "raw",
@@ -62,7 +61,7 @@ export async function hashPassword(
       name: "PBKDF2",
       hash: "SHA-256",
       salt: fromBase64Url(salt).buffer as ArrayBuffer,
-      iterations: PASSWORD_ITERATIONS,
+      iterations,
     },
     key,
     PASSWORD_BYTES * 8,
@@ -74,8 +73,9 @@ export async function verifyPassword(
   password: string,
   expectedHash: string,
   salt: string,
+  iterations = LEGACY_PASSWORD_ITERATIONS,
 ): Promise<boolean> {
-  const { hash } = await hashPassword(password, salt);
+  const { hash } = await hashPassword(password, salt, iterations);
   return timingSafeEqual(hash, expectedHash);
 }
 

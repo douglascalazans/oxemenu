@@ -17,9 +17,14 @@ export default function MarketingHome() {
           <a href="#como-funciona">Como funciona</a>
           <a href="/coffe-love">Ver demonstração</a>
         </nav>
-        <a className="header-cta" href={whatsApp} target="_blank" rel="noreferrer">
-          Quero meu cardápio
-        </a>
+        <div className="header-actions">
+          <a className="header-login" href="/painel/login">
+            LOGIN
+          </a>
+          <a className="header-cta" href={whatsApp} target="_blank" rel="noreferrer">
+            Quero meu cardápio
+          </a>
+        </div>
       </header>
 
       <section className="home-hero">
@@ -253,7 +258,6 @@ export default function MarketingHome() {
         <div>
           <a href="/coffe-love">Demonstração</a>
           <a href="/painel/login">Área do comerciante</a>
-          <a href="/admin/login">Administração</a>
         </div>
         <small>© 2026 OxeMenu. Feito em Caruaru, Pernambuco.</small>
       </footer>

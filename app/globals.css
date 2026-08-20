@@ -202,6 +202,38 @@ img {
   padding: 0.7rem 1rem;
 }
 
+.header-actions {
+  align-items: center;
+  display: flex;
+  gap: 0.65rem;
+}
+
+.header-login {
+  align-items: center;
+  border: 1px solid rgba(107, 51, 44, 0.24);
+  border-radius: 14px;
+  color: var(--brown-dark);
+  display: inline-flex;
+  font-size: 0.74rem;
+  font-weight: 900;
+  justify-content: center;
+  letter-spacing: 0.08em;
+  min-height: 42px;
+  padding: 0.7rem 1rem;
+  transition:
+    background 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    transform 180ms ease;
+}
+
+.header-login:hover {
+  background: var(--brown);
+  border-color: var(--brown);
+  color: white;
+  transform: translateY(-2px);
+}
+
 .home-hero {
   align-items: center;
   display: grid;
@@ -2204,12 +2236,6 @@ img {
   margin-top: 1.2rem;
 }
 
-.login-foot {
-  color: #9b8984;
-  font-size: 0.6rem;
-  margin: 1.2rem 0 0;
-}
-
 /* Dashboards */
 
 .dashboard-page {
@@ -3782,6 +3808,17 @@ img {
     padding: 0.7rem 0.8rem;
   }
 
+  .site-header .header-actions {
+    gap: 0.45rem;
+  }
+
+  .site-header .header-login {
+    border-radius: 12px;
+    font-size: 0.64rem;
+    min-height: 40px;
+    padding: 0.65rem 0.75rem;
+  }
+
   .site-header .header-cta::after {
     content: "Falar conosco";
     font-size: 0.7rem;
@@ -4270,6 +4307,12 @@ img {
 
   .heading-actions {
     flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 360px) {
+  .site-header .header-cta {
+    display: none;
   }
 }
 

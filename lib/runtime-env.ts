@@ -27,7 +27,11 @@ export function getRuntimeEnv(): AppRuntimeEnv {
   }
   const supabaseUrl =
     process.env.SUPABASE_URL ?? process.env.SUPABASE_DATABASE_URL;
-  if (!runtime.BUCKET && supabaseUrl && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  const storageCredential =
+    process.env.SUPABASE_SECRET_KEY ??
+    process.env.SUPABASE_SERVICE_ROLE_KEY ??
+    process.env.OXEMENU_STORAGE_PROXY_KEY;
+  if (!runtime.BUCKET && supabaseUrl && storageCredential) {
     runtime.BUCKET = createSupabaseBucketAdapter();
   }
   runtime.ADMIN_EMAILS ??= process.env.ADMIN_EMAILS;

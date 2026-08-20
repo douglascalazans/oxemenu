@@ -1,6 +1,8 @@
 import { getRequestSession } from "@/lib/auth/server";
 import { DataError } from "@/lib/server-data";
 import type { Actor, ActorRole } from "@/lib/models";
+import { RequestSecurityError } from "@/lib/security";
+import { hasRequiredRole } from "@/lib/access-control";
 
 export async function requireRequestActor(
   request: Request,
@@ -8,7 +10,7 @@ export async function requireRequestActor(
 ): Promise<Actor> {
   const actor = await getRequestSession(request);
   if (!actor) throw new DataError("Entre com sua conta para continuar.", 401);
-  if (!actor || !roles.includes(actor.role)) {
+  if (!hasRequiredRole(actor, roles)) {
     throw new DataError("Você não tem permissão para esta área.", 403);
   }
   return actor;
@@ -16,10 +18,20 @@ export async function requireRequestActor(
 
 export function apiError(error: unknown) {
   if (error instanceof DataError) {
-    return Response.json({ error: error.message }, { status: error.status });
+    return Response.json(
+      { error: error.message },
+      { status: error.status, headers: { "Cache-Control": "no-store" } },
+    );
   }
-  const message =
-    error instanceof Error ? error.message : "Não foi possível concluir a ação.";
-  console.error(error);
-  return Response.json({ error: message }, { status: 500 });
+  if (error instanceof RequestSecurityError) {
+    return Response.json(
+      { error: error.message },
+      { status: error.status, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+  console.error("[api] Unexpected request failure", error);
+  return Response.json(
+    { error: "Não foi possível concluir a ação." },
+    { status: 500, headers: { "Cache-Control": "no-store" } },
+  );
 }
