@@ -9,7 +9,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "npm run lint && npm run typecheck && npm run test:security",
+    "test": "npm run lint && npm run typecheck && npm run test:security && npm run test:assets",
+    "test:assets": "node --test tests/assets/*.test.ts",
     "test:security": "node --test tests/security/*.test.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint app components db lib tests next.config.ts"
